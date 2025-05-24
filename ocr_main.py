@@ -1,4 +1,5 @@
 # coding=utf-8
+# ocr_main.py
 import os
 import time
 import hashlib
@@ -15,8 +16,8 @@ import json
 
 # ========== 配置区 =================================================
 URL = "http://webapi.xfyun.cn/v1/service/v1/ocr/handwriting"
-APPID = ""
-API_KEY = ""
+APPID = "945fe4ad"
+API_KEY = "055722a19796fea88a347d8e2d2e3db8"
 language = "cn|en"
 location = "false"
 # ==================================================================
@@ -118,7 +119,7 @@ def has_images(folder_path):
     )
 
 
-def process_folder(folder_path):
+def process_folder(folder_path, log_callback=print):
     folder_name = os.path.basename(folder_path)
     all_text_blocks = []
 
@@ -126,29 +127,29 @@ def process_folder(folder_path):
         if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
             img_path = os.path.join(folder_path, filename)
             try:
-                print(f"正在识别：{img_path}")
+                log_callback(f"正在识别：{img_path}")
                 text = ocr_and_extract_text(img_path)
-                all_text_blocks.append(text)  # 应使用 append
+                all_text_blocks.append(text)
             except Exception as e:
-                print(f"识别失败：{img_path}，原因：{e}")
+                log_callback(f"识别失败：{img_path}，原因：{e}")
 
     if all_text_blocks:
-        full_text = '\n'.join(all_text_blocks)  # 合并为一个整体文本
+        full_text = '\n'.join(all_text_blocks)
         doc_path = os.path.join(folder_path, f"{folder_name}.docx")
-        print(f"正在生成 Word：{doc_path}")
-        create_word(doc_path, [full_text],folder_name)
+        log_callback(f"正在生成 Word：{doc_path}")
+        create_word(doc_path, [full_text], folder_name)
     else:
-        print(f"{folder_path} 中没有可识别的图片")
+        log_callback(f"{folder_path} 中没有可识别的图片")
 
 
-def process_all(root_dir):
+def process_all(root_dir, log_callback=print):
     if has_images(root_dir):
-        process_folder(root_dir)
+        process_folder(root_dir, log_callback)
     else:
         for sub in os.listdir(root_dir):
             sub_path = os.path.join(root_dir, sub)
             if os.path.isdir(sub_path) and has_images(sub_path):
-                process_folder(sub_path)
+                process_folder(sub_path, log_callback)
 
 
 if __name__ == '__main__':
