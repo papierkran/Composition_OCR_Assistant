@@ -1,0 +1,2 @@
+# Composition_OCR_Assistant
+手写作文图片识别并生成word，ocr使用讯飞ocr的api
