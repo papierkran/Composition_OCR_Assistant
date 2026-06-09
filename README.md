@@ -6,19 +6,35 @@
 
 ---
 
+## 技术栈
+
+| 类别 | 技术 |
+|------|------|
+| 编程语言 | Python |
+| GUI 框架 | PySide6 (Qt for Python) |
+| OCR 服务 | 讯飞手写 OCR API、百度文档矫正增强 API、PaddleOCR（离线替代） |
+| AI/LLM | OpenAI-compatible API（DeepSeek、OpenAI、自定义 Provider） |
+| 文档处理 | python-docx |
+| HTTP 请求 | requests |
+| 图像处理 | Pillow、OpenCV |
+| 打包工具 | PyInstaller |
+
+---
+
 ## 主要功能
 
 - 图片批量 OCR：支持 `.jpg`、`.jpeg`、`.png`、`.bmp`
 - 自动扫描任务：可识别当前作文文件夹，或其一级子文件夹中的图片任务
 - Word 输出：按作文文件夹名生成同名 `.docx`
 - AI 错别字修正：支持 DeepSeek、OpenAI 或自定义 OpenAI-compatible Provider
-- AI 作文改写：支持自定义 Prompt，并可设置目标字数范围
+- AI 作文改写：支持自定义 Prompt，并可设置目标字数范围（自动重试直到字数符合要求）
 - 百度图片矫正：可在 OCR 前自动矫正倾斜/弯曲文档图片
 - 任务队列：显示学生姓名、文件路径、作文名称、修改前字数、当前步骤、修改后字数、状态、实时日志
 - 多线程处理：默认同时处理 3 个任务，队列日志按任务行独立更新
-- 失败重试：只有“已完成”的任务会跳过，“失败”的任务再次开始时会重新处理
-- 手动重新加入：选中任务后点击“重新加入”，可把任务改回等待处理
+- 失败重试：只有"已完成"的任务会跳过，"失败"的任务再次开始时会重新处理
+- 手动重新加入：选中任务后点击"重新加入"，可把任务改回等待处理
 - 配置编辑器：可在 GUI 中管理 OCR、AI Provider、Prompt 等配置
+- 拖放支持：可直接拖入 `.docx` 文件或文件夹到任务队列
 
 ---
 
@@ -30,10 +46,10 @@
 
 常用流程：
 
-1. 填写或选择“作文文件夹”路径。
-2. 按需展开“百度图片矫正”“OCR 识别配置”“AI 错别字修正”“AI 修改作文”。
-3. 点击“开始处理（自动读取路径下任务并开始）”。
-4. 查看任务队列中的“当前步骤”“状态”和“实时日志”。
+1. 填写或选择"作文文件夹"路径。
+2. 按需展开"百度图片矫正""OCR 识别配置""AI 错别字修正""AI 修改作文"。
+3. 点击"开始处理（自动读取路径下任务并开始）"。
+4. 查看任务队列中的"当前步骤""状态"和"实时日志"。
 
 任务队列按钮：
 
@@ -49,8 +65,8 @@
 - 已在队列中的任务不会重复添加。
 - 后续新增任务会追加到队列。
 - 如果已有任务正在处理，不会启动第二个调度器；新任务会排队等待线程池处理。
-- 状态为“已完成”的任务会跳过。
-- 状态为“失败”或“待完成”的任务会重新进入处理队列。
+- 状态为"已完成"的任务会跳过。
+- 状态为"失败"或"待完成"的任务会重新进入处理队列。
 
 ### docx作文处理
 
@@ -66,6 +82,17 @@
 - 修改作者
 
 处理日志可折叠展开，适合单独对已有文档做二次整理。
+
+### 文档 AI 识别处理
+
+直接对已有 `.docx` 文件进行 AI 分析处理。
+
+功能特点：
+
+- 自动提取文档中的作文内容
+- AI 分析提取元数据（标题、作者、字数、年级等）
+- 自动修正错别字和语法错误
+- 生成格式化的新文档
 
 ---
 
@@ -83,10 +110,10 @@
 Word 内容结构：
 
 - 文件夹名会作为姓名/标题标注写入文档。
-- OCR 内容写入“修改前：”区域。
-- 文档预留“修改后：”区域。
+- OCR 内容写入"修改前："区域。
+- 文档预留"修改后："区域。
 - 启用 AI 错别字修正后，会把修正内容插入到对应区域。
-- 启用 AI 作文改写后，会把改写结果写入“修改后：”区域。
+- 启用 AI 作文改写后，会把改写结果写入"修改后："区域。
 
 ---
 
@@ -94,40 +121,94 @@ Word 内容结构：
 
 配置加载优先级：
 
-1. `D:\person_data\ocer助手\presson.json`
+1. `D:\person_data\ocer助手\presson.json`（个人配置目录）
 2. 程序所在目录的 `config.json`
-3. 默认配置
+3. 默认内置配置
 
 GUI 保存配置时会优先保存到个人配置目录；如果个人配置目录不存在，则保存到程序所在目录的 `config.json`。
 
-主要配置项：
+### 配置结构
 
-- `OCR.XFYUN.URL`：讯飞 OCR 接口地址
-- `OCR.XFYUN.APPID`：讯飞 APPID
-- `OCR.XFYUN.API_KEY`：讯飞 API Key
-- `OCR.BAIDU_CORRECTION`：百度图片矫正配置
-- `LLM.PROVIDERS`：AI Provider 列表
-- `LLM.TASKS.typo_fix`：错别字修正任务配置
-- `LLM.TASKS.editor`：作文改写任务配置
-- `APP.ROOT_DIR`：默认作文文件夹路径
+```json
+{
+  "OCR": {
+    "PROVIDER": "xfyun_handwriting",
+    "XFYUN": {
+      "URL": "讯飞 OCR 接口地址",
+      "APPID": "讯飞 APPID",
+      "API_KEY": "讯飞 API Key",
+      "LANGUAGE": "识别语言",
+      "LOCATION": "是否返回位置信息"
+    },
+    "BAIDU_CORRECTION": {
+      "ENABLED": "是否启用百度图片矫正",
+      "API_KEY": "百度 API Key",
+      "SECRET_KEY": "百度 Secret Key"
+    }
+  },
+  "LLM": {
+    "PROVIDERS": {
+      "deepseek": {
+        "BASE_URL": "DeepSeek API 地址",
+        "API_KEY": "API Key",
+        "MODEL": "模型名称"
+      },
+      "openai": {
+        "BASE_URL": "OpenAI API 地址",
+        "API_KEY": "API Key",
+        "MODEL": "模型名称"
+      },
+      "custom": {
+        "BASE_URL": "自定义 API 地址",
+        "API_KEY": "API Key",
+        "MODEL": "模型名称"
+      }
+    },
+    "TASKS": {
+      "typo_fix": {
+        "ENABLED": "是否启用错别字修正",
+        "PROVIDER": "使用的 Provider",
+        "PROMPT": "错别字修正 Prompt"
+      },
+      "editor": {
+        "ENABLED": "是否启用作文改写",
+        "PROVIDER": "使用的 Provider",
+        "PROMPT": "作文改写 Prompt",
+        "COUNT_MIN": "目标字数下限",
+        "COUNT_MAX": "目标字数上限"
+      }
+    }
+  },
+  "APP": {
+    "ROOT_DIR": "默认作文文件夹路径",
+    "DEBUG": "是否启用调试模式"
+  }
+}
+```
 
 ---
 
 ## 运行方式
 
-安装依赖：
+### 安装依赖
 
 ```bash
 pip install PySide6 python-docx requests openai Pillow
 ```
 
-运行 GUI：
+可选依赖（用于离线 OCR 和图片矫正）：
+
+```bash
+pip install paddleocr opencv-python torch
+```
+
+### 运行 GUI
 
 ```bash
 python ocr_gui.py
 ```
 
-命令行处理入口：
+### 命令行处理
 
 ```bash
 python ocr_main.py <作文文件夹路径>
@@ -146,8 +227,16 @@ python ocr_main.py <作文文件夹路径> --debug
 
 ## 打包为 EXE
 
+使用 spec 文件打包（推荐，已配置图标）：
+
 ```bash
 pyinstaller --clean ocr_gui.spec
+```
+
+或使用命令行打包：
+
+```bash
+pyinstaller --onefile --noconsole --icon=app.ico --name=ocr_gui ocr_gui.py
 ```
 
 生成文件位于：
@@ -162,18 +251,50 @@ dist/ocr_gui.exe
 
 ```text
 Composition_OCR_Assistant/
-├── ocr_gui.py              # PySide6 主程序
-├── ocr_main.py             # OCR 与 Word/AI 处理核心逻辑
-├── config_editor_ui.py     # 配置编辑器
-├── config_migrate.py       # 配置迁移工具
-├── llm_client.py           # OpenAI-compatible LLM 客户端
-├── baidu_image_corrector.py
-├── ocr_gui.spec            # PyInstaller 打包配置
-├── config.json             # 本地配置文件
-├── app.ico                 # 应用图标
-├── dist/                   # 打包输出
-└── 旧版CTK/                # 旧版 CustomTkinter 代码备份
+├── ocr_gui.py                  # PySide6 GUI 主程序（主入口）
+├── ocr_main.py                 # OCR 与 Word/AI 处理核心逻辑
+├── llm_client.py               # OpenAI-compatible LLM 客户端
+├── config_editor_ui.py         # 配置编辑器 GUI
+├── config_migrate.py           # 配置迁移工具（旧版→新版 schema）
+├── baidu_image_corrector.py    # 百度文档矫正增强 API 客户端
+├── config.json                 # 本地配置文件
+├── app.ico                     # 应用图标
+├── ocr_gui.spec                # PyInstaller 打包配置（GUI）
+├── ocr_main.spec               # PyInstaller 打包配置（CLI）
+├── LICENSE                     # GPLv3 许可证
+│
+├── 新文件统一docx格式.py        # 独立工具：DOCX 格式化/批处理/AI修正
+├── paddle处理.py                # 基于 PaddleOCR 的离线替代方案
+│
+├── dist/                       # PyInstaller 打包输出
+├── build/                      # PyInstaller 构建中间文件
+├── 旧版CTK/                    # 旧版 CustomTkinter 代码备份
+└── 图片转文档一键处理/          # 独立子项目（UVDoc 深度学习图片矫正）
 ```
+
+---
+
+## 独立工具
+
+### 新文件统一docx格式.py
+
+交互式命令行工具，提供 8 种 DOCX 批处理功能：
+
+```bash
+python 新文件统一docx格式.py
+```
+
+### paddle处理.py
+
+基于 PaddleOCR 的离线 OCR 替代方案，无需联网即可识别：
+
+```bash
+python paddle处理.py
+```
+
+### 图片转文档一键处理
+
+使用 UVDoc 深度学习模型进行文档图片矫正的独立子项目。
 
 ---
 
@@ -184,9 +305,12 @@ Composition_OCR_Assistant/
 - 启用 AI 错别字修正或作文改写会明显增加处理时间，并消耗对应 API 额度。
 - 多线程默认并发数为 3；如果 API 限流频繁，可在 `ocr_gui.py` 中调整 `self.max_parallel_tasks`。
 - 任务队列状态以 GUI 运行期间为准；重启程序后不会恢复上次队列运行状态。
+- AI 作文改写具有字数监督机制，会自动重试（最多 4 次）直到输出字数在目标范围内。
 
 ---
 
 ## License
 
-本项目仅供学习和教育用途，禁止商业或非法用途。OCR 和 AI API 使用请遵守对应服务商协议。
+本项目采用 [GNU General Public License v3 (GPLv3)](LICENSE) 许可证。
+
+仅供学习和教育用途，禁止商业或非法用途。OCR 和 AI API 使用请遵守对应服务商协议。

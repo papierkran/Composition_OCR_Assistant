@@ -28,3 +28,24 @@ Traceback (most recent call last):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 TypeError: task_status(QString,QString,QString,QString,QString,QString,QString) needs 7 argument(s), 5 given!
 
+
+[2026-06-02 15:29:25] 未捕获异常
+Traceback (most recent call last):
+  File "c:\Users\WINNAS\Desktop\workfold\tools\Composition_OCR_Assistant\ocr_gui.py", line 2009, in <module>
+KeyboardInterrupt
+
+
+[2026-06-02 15:42:04] 未捕获异常
+Traceback (most recent call last):
+  File "c:\Users\WINNAS\Desktop\workfold\tools\Composition_OCR_Assistant\ocr_gui.py", line 2003, in <module>
+    exit_code = app.exec()
+KeyboardInterrupt
+
+
+[2026-06-09 21:31:47] 未捕获异常
+Traceback (most recent call last):
+  File "c:\Users\WINNAS\Desktop\workfold\tools\Composition_OCR_Assistant\ocr_gui.py", line 1037, in _start_processing
+    def _start_processing(self):
+    
+KeyboardInterrupt
+

@@ -24,7 +24,7 @@ from PySide6.QtGui import QFont, QColor, QIcon
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.oxml.ns import qn
-from docx.enum.text import WD_LINE_SPACING, WD_BREAK
+from docx.enum.text import WD_LINE_SPACING, WD_BREAK, WD_ALIGN_PARAGRAPH
 from openai import OpenAI
 
 
@@ -307,8 +307,11 @@ class MainWindow(QMainWindow):
         self.log_signal.doc_ai_tasks_loaded.connect(self._render_doc_ai_queue)
         self.log_signal.doc_ai_task_status.connect(self._update_doc_ai_task_status)
 
-        self.setWindowTitle("Composition OCR Assistant 作文修改助手 v1.1")
+        self.setWindowTitle("Composition OCR Assistant 作文修改助手 v1.2")
         self.resize(1100, 800)
+
+        # 启用拖放
+        self.setAcceptDrops(True)
 
         # Set icon
         for ico_name in ("app.ico",):
@@ -329,9 +332,9 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(QLabel("功能选择:"))
         self.btn_ocr = QPushButton("图片转作文")
         self.btn_ocr.setFixedWidth(120)
-        self.btn_ai = QPushButton("docx作文处理")
+        self.btn_ai = QPushButton("文档作文处理")
         self.btn_ai.setFixedWidth(120)
-        self.btn_doc_ai = QPushButton("文档ai识别修改")
+        self.btn_doc_ai = QPushButton("文档ai识别处理")
         self.btn_doc_ai.setFixedWidth(140)
         self.btn_config = QPushButton("配置编辑")
         self.btn_config.setFixedWidth(100)
@@ -373,6 +376,143 @@ class MainWindow(QMainWindow):
             self.page_ai.show()
         else:
             self.page_doc_ai.show()
+
+    # 拖放支持
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def _make_key_toggle(self, entry: QLineEdit, layout: QHBoxLayout):
+        """在 layout 中 entry 后面添加一个眼睛按钮，点击切换密码显示/隐藏"""
+        btn = QPushButton("👁")
+        btn.setFixedWidth(28)
+        btn.setCheckable(True)
+        btn.setStyleSheet("QPushButton { border: none; font-size: 14px; }")
+        btn.toggled.connect(lambda checked: entry.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        layout.addWidget(btn)
+        return btn
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        
+        dropped_paths = [url.toLocalFile() for url in urls]
+        
+        # 分类拖入的内容
+        docx_files = []
+        folders = []
+        image_files = []
+        
+        for path in dropped_paths:
+            if os.path.isdir(path):
+                folders.append(path)
+            elif path.lower().endswith('.docx') and not os.path.basename(path).startswith('~$'):
+                docx_files.append(path)
+            elif path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                image_files.append(path)
+        
+        # 根据当前页面和拖入内容决定处理方式
+        if docx_files or folders:
+            # 切换到"文档ai识别处理"页面
+            self._show_page("doc_ai")
+            
+            # 如果拖入的是文件夹，设置路径
+            if folders:
+                self.doc_ai_path_entry.setText(folders[0])
+                self.log_signal.doc_ai_log_message.emit(f"已设置文件夹路径：{folders[0]}")
+            
+            # 如果拖入的是docx文件，直接开始处理
+            if docx_files:
+                self._process_dropped_docx_files(docx_files)
+        
+        elif image_files:
+            # 切换到"图片转作文"页面
+            self._show_page("ocr")
+            self.log_signal.log_message.emit(f"拖入了 {len(image_files)} 个图片文件")
+
+    def _process_dropped_docx_files(self, docx_files):
+        """处理拖入的docx文件"""
+        # 检查AI配置
+        api_key = self.doc_ai_key_entry.text().strip()
+        if not api_key:
+            self.log_signal.doc_ai_log_message.emit("请先填写 API Key")
+            return
+        
+        # 将拖入的文件添加到任务列表
+        added_count = self._add_doc_ai_tasks(docx_files)
+        self.log_signal.doc_ai_log_message.emit(f"添加了 {added_count} 个docx文件到任务列表")
+        
+        # 在新线程中处理
+        threading.Thread(target=self._run_dropped_docx_workflow, args=(docx_files,), daemon=True).start()
+
+    def _run_dropped_docx_workflow(self, docx_files):
+        """处理拖入的docx文件的工作流"""
+        import shutil
+        
+        api_key = self.doc_ai_key_entry.text().strip()
+        base_url = self.doc_ai_url_entry.text().strip()
+        model = self.doc_ai_model_entry.text().strip() or "deepseek-chat"
+        max_parallel = int(self.doc_ai_parallel_spin.currentText())
+
+        # 保存配置
+        selected_provider = _ensure_provider_exists(self.config, self.doc_ai_provider_combo.currentText() or "deepseek")
+        cfg = self.config
+        cfg.setdefault("LLM", {})
+        cfg["LLM"].setdefault("PROVIDERS", {})
+        cfg["LLM"]["PROVIDERS"].setdefault(selected_provider, {})
+        cfg["LLM"]["PROVIDERS"][selected_provider]["API_KEY"] = api_key
+        cfg["LLM"]["PROVIDERS"][selected_provider]["BASE_URL"] = base_url
+        cfg["LLM"]["PROVIDERS"][selected_provider]["MODEL"] = model
+        save_config(cfg)
+
+        # 获取自定义提示词
+        custom_prompt = self.doc_ai_prompt_text.toPlainText().strip()
+        if not custom_prompt:
+            custom_prompt = "下面是一篇中文文章，请你【只修改错别字和明显的识别错误】。\n要求：1. 不改变原意 2. 不润色文风 3. 不增删内容 4. 保持原有段落结构 5. 只输出修改后的完整文章正文\n"
+
+        # 获取字数限制
+        count_min = None
+        count_max = None
+        min_text = self.doc_ai_count_min.text().strip()
+        max_text = self.doc_ai_count_max.text().strip()
+        if min_text:
+            try:
+                count_min = int(min_text)
+            except ValueError:
+                pass
+        if max_text:
+            try:
+                count_max = int(max_text)
+            except ValueError:
+                pass
+
+        # 更新表格显示
+        self.log_signal.doc_ai_tasks_loaded.emit(docx_files)
+
+        # 创建AI客户端
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        except Exception as e:
+            self.log_signal.doc_ai_log_message.emit(f"创建AI客户端失败: {e}")
+            return
+
+        # 使用线程池处理文件
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            futures = []
+            for docx_path in docx_files:
+                future = executor.submit(self._process_single_docx, docx_path, client, model, custom_prompt, count_min, count_max)
+                futures.append((future, docx_path))
+
+            # 等待所有任务完成
+            for future, docx_path in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 线程异常 - {e}")
+                    self.log_signal.doc_ai_task_status.emit(docx_path, "失败", str(e))
+
+        self.log_signal.doc_ai_log_message.emit("处理完成！")
 
     def _append_log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -445,14 +585,17 @@ class MainWindow(QMainWindow):
         baidu_key_layout = QHBoxLayout()
         baidu_key_layout.addWidget(QLabel("百度 API Key"))
         self.baidu_api_key_entry = QLineEdit(self.config.get("OCR", {}).get("BAIDU_CORRECTION", {}).get("API_KEY", ""))
+        self.baidu_api_key_entry.setEchoMode(QLineEdit.Password)
         baidu_key_layout.addWidget(self.baidu_api_key_entry, 1)
+        self._make_key_toggle(self.baidu_api_key_entry, baidu_key_layout)
         baidu_sec.add_layout(baidu_key_layout)
 
         baidu_secret_layout = QHBoxLayout()
         baidu_secret_layout.addWidget(QLabel("百度 Secret Key"))
-        self.baidu_secret_key_entry = QLineEdit(self.config.get("OCR", {}).get("BAIDU_CORRECTION", {}).get("SECRET_KEY", ""))
         baidu_secret_key_entry = QLineEdit(self.config.get("OCR", {}).get("BAIDU_CORRECTION", {}).get("SECRET_KEY", ""))
+        baidu_secret_key_entry.setEchoMode(QLineEdit.Password)
         baidu_secret_layout.addWidget(baidu_secret_key_entry, 1)
+        self._make_key_toggle(baidu_secret_key_entry, baidu_secret_layout)
         baidu_sec.add_layout(baidu_secret_layout)
         self.baidu_secret_key_entry = baidu_secret_key_entry
 
@@ -476,7 +619,9 @@ class MainWindow(QMainWindow):
         ocr_apikey_layout = QHBoxLayout()
         ocr_apikey_layout.addWidget(QLabel("API_KEY"))
         self.apikey_entry = QLineEdit(self.config.get("OCR", {}).get("XFYUN", {}).get("API_KEY", ""))
+        self.apikey_entry.setEchoMode(QLineEdit.Password)
         ocr_apikey_layout.addWidget(self.apikey_entry, 1)
+        self._make_key_toggle(self.apikey_entry, ocr_apikey_layout)
         ocr_sec.add_layout(ocr_apikey_layout)
 
         scroll_layout.addWidget(ocr_sec)
@@ -495,6 +640,7 @@ class MainWindow(QMainWindow):
         ) or "deepseek"
         self.typo_api_key.setText((self.config.get("LLM", {}).get("PROVIDERS", {}).get(typo_provider, {}) or {}).get("API_KEY", ""))
         row1.addWidget(self.typo_api_key, 1)
+        self._make_key_toggle(self.typo_api_key, row1)
         self.use_typo_fix = QCheckBox("启用 AI 错别字自动修正（较慢）")
         self.use_typo_fix.setChecked(bool((self.config.get("LLM", {}).get("TASKS", {}).get("typo_fix", {}) or {}).get("ENABLED", False)))
         row1.addWidget(self.use_typo_fix)
@@ -554,6 +700,7 @@ class MainWindow(QMainWindow):
         ) or "deepseek"
         self.editor_api_key.setText((self.config.get("LLM", {}).get("PROVIDERS", {}).get(editor_provider, {}) or {}).get("API_KEY", ""))
         row5.addWidget(self.editor_api_key, 1)
+        self._make_key_toggle(self.editor_api_key, row5)
         editor_layout.addLayout(row5)
 
         row6 = QHBoxLayout()
@@ -1176,6 +1323,7 @@ class MainWindow(QMainWindow):
         self.ai_key_entry.setEchoMode(QLineEdit.Password)
         self.ai_key_entry.setText((self.config.get("LLM", {}).get("PROVIDERS", {}).get(ai_provider, {}) or {}).get("API_KEY", ""))
         row3.addWidget(self.ai_key_entry, 1)
+        self._make_key_toggle(self.ai_key_entry, row3)
         ai_layout.addLayout(row3)
 
         row4 = QHBoxLayout()
@@ -1305,10 +1453,19 @@ class MainWindow(QMainWindow):
 
         # API Key
         self.doc_ai_key_entry = QLineEdit()
+        self.doc_ai_key_entry.setEchoMode(QLineEdit.Password)
         default_provider = _ensure_provider_exists(self.config, "deepseek")
         default_cfg = (self.config.get("LLM", {}).get("PROVIDERS", {}).get(default_provider, {}) or {})
         self.doc_ai_key_entry.setText(default_cfg.get("API_KEY", ""))
-        ai_form.addRow("API Key:", self.doc_ai_key_entry)
+        key_row = QHBoxLayout()
+        key_row.addWidget(self.doc_ai_key_entry)
+        btn_toggle = QPushButton("👁")
+        btn_toggle.setFixedWidth(28)
+        btn_toggle.setCheckable(True)
+        btn_toggle.setStyleSheet("QPushButton { border: none; font-size: 14px; }")
+        btn_toggle.toggled.connect(lambda checked: self.doc_ai_key_entry.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        key_row.addWidget(btn_toggle)
+        ai_form.addRow("API Key:", key_row)
 
         # Base URL
         self.doc_ai_url_entry = QLineEdit()
@@ -1335,6 +1492,49 @@ class MainWindow(QMainWindow):
         path_layout.addWidget(btn_browse)
         path_group.setLayout(path_layout)
         scroll_layout.addWidget(path_group)
+
+        # 自定义提示词
+        prompt_group = QGroupBox("AI 修改作文提示词（自定义）")
+        prompt_layout = QVBoxLayout()
+        self.doc_ai_prompt_text = QTextEdit()
+        self.doc_ai_prompt_text.setMaximumHeight(120)
+        self.doc_ai_prompt_text.setPlainText(
+            (self.config.get("LLM", {}).get("TASKS", {}).get("editor", {}) or {}).get("PROMPT")
+            or DEFAULT_CONFIG["LLM"]["TASKS"]["editor"]["PROMPT"]
+        )
+        self.doc_ai_prompt_text.setPlaceholderText("输入AI修改作文的提示词，留空使用默认提示词...")
+        prompt_layout.addWidget(self.doc_ai_prompt_text)
+        prompt_group.setLayout(prompt_layout)
+        scroll_layout.addWidget(prompt_group)
+
+        # 并发设置
+        parallel_group = QGroupBox("并发设置")
+        parallel_layout = QHBoxLayout()
+        parallel_layout.addWidget(QLabel("并发数:"))
+        self.doc_ai_parallel_spin = QComboBox()
+        self.doc_ai_parallel_spin.addItems(["1", "2", "3", "4", "5"])
+        self.doc_ai_parallel_spin.setCurrentText("3")
+        parallel_layout.addWidget(self.doc_ai_parallel_spin)
+        parallel_layout.addStretch()
+        parallel_group.setLayout(parallel_layout)
+        scroll_layout.addWidget(parallel_group)
+
+        # 字数限制设置
+        count_group = QGroupBox("字数限制（修改后字数）")
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("最少字数:"))
+        self.doc_ai_count_min = QLineEdit("780")
+        self.doc_ai_count_min.setFixedWidth(80)
+        count_layout.addWidget(self.doc_ai_count_min)
+        count_layout.addWidget(QLabel("-"))
+        count_layout.addWidget(QLabel("最多字数:"))
+        self.doc_ai_count_max = QLineEdit("930")
+        self.doc_ai_count_max.setFixedWidth(80)
+        count_layout.addWidget(self.doc_ai_count_max)
+        count_layout.addWidget(QLabel("（留空表示不限制）"))
+        count_layout.addStretch()
+        count_group.setLayout(count_layout)
+        scroll_layout.addWidget(count_group)
 
         # 开始按钮
         btn_start = QPushButton("开始识别")
@@ -1413,77 +1613,9 @@ class MainWindow(QMainWindow):
     def _start_doc_ai_workflow(self):
         threading.Thread(target=self._run_doc_ai_workflow, daemon=True).start()
 
-    def _run_doc_ai_workflow(self):
-        folder = self.doc_ai_path_entry.text().strip()
-        api_key = self.doc_ai_key_entry.text().strip()
-        base_url = self.doc_ai_url_entry.text().strip()
-        model = self.doc_ai_model_entry.text().strip() or "deepseek-chat"
-
-        if not folder or not api_key:
-            self.log_signal.doc_ai_log_message.emit("请填写文件夹路径和 API Key")
-            return
-        if not os.path.isdir(folder):
-            self.log_signal.doc_ai_log_message.emit("文件夹路径无效")
-            return
-
-        # 保存配置
-        selected_provider = _ensure_provider_exists(self.config, self.doc_ai_provider_combo.currentText() or "deepseek")
-        cfg = self.config
-        cfg.setdefault("LLM", {})
-        cfg["LLM"].setdefault("PROVIDERS", {})
-        cfg["LLM"]["PROVIDERS"].setdefault(selected_provider, {})
-        cfg["LLM"]["PROVIDERS"][selected_provider]["API_KEY"] = api_key
-        cfg["LLM"]["PROVIDERS"][selected_provider]["BASE_URL"] = base_url
-        cfg["LLM"]["PROVIDERS"][selected_provider]["MODEL"] = model
-        save_config(cfg)
-
-        # 扫描docx文件
-        self.log_signal.doc_ai_log_message.emit("开始扫描文件夹...")
-        docx_files = self._scan_docx_files(folder)
-
-        if not docx_files:
-            self.log_signal.doc_ai_log_message.emit("未找到docx文件")
-            return
-
-        self.log_signal.doc_ai_log_message.emit(f"找到 {len(docx_files)} 个docx文件")
-        self.log_signal.doc_ai_tasks_loaded.emit(docx_files)
-
-        # 创建AI客户端
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-        except Exception as e:
-            self.log_signal.doc_ai_log_message.emit(f"创建AI客户端失败: {e}")
-            return
-
-        # AI识别提示词
-        prompt_template = """请分析以下文档内容，识别并提取以下信息：
-1. 作文标题：从文章中识别的标题，去掉"题目"、"标题"等前缀
-2. 作者：从文章中识别的作者姓名，去掉"——"前缀
-3. 原文字数：文章原始字数（包含标点，不含空格）
-4. 修改后字数：文章修改后字数（包含标点，不含空格）
-5. 年级：从文章中识别的年级，如：三年级、四年级等，如无法识别则填"未知"
-6. 线上或线下：从文章中识别的线上或线下，如无法识别则填"未知"
-
-文档路径：{file_path}
-
-文档内容：
-{text}
-
-请以JSON格式返回，格式如下：
-{{
-  "作文标题": "识别的标题",
-  "作者": "识别的作者",
-  "原文字数": "原始字数",
-  "修改后字数": "修改后字数",
-  "年级": "识别的年级",
-  "线上或线下": "识别的线上或线下"
-}}"""
-
-        # 处理每个文件
-        for i, docx_path in enumerate(docx_files, 1):
-            self.log_signal.doc_ai_log_message.emit(f"处理第 {i}/{len(docx_files)} 个文件: {os.path.basename(docx_path)}")
-            self.log_signal.doc_ai_task_status.emit(docx_path, "处理中", "正在读取文件...")
-
+    def _process_single_docx(self, docx_path, client, model, custom_prompt, count_min=None, count_max=None, max_retries=3):
+        """处理单个docx文件（支持重试）"""
+        for attempt in range(max_retries):
             try:
                 # 读取docx内容
                 doc = Document(docx_path)
@@ -1492,21 +1624,57 @@ class MainWindow(QMainWindow):
                 if not full_text.strip():
                     self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 空文档，跳过")
                     self.log_signal.doc_ai_task_status.emit(docx_path, "跳过", "空文档")
-                    continue
+                    return
 
-                # 构造prompt
-                prompt = prompt_template.format(
-                    file_path=docx_path,
-                    text=full_text
-                )
+                # 创建"修改后"文件夹
+                parent_dir = os.path.dirname(docx_path)
+                modified_dir = os.path.join(parent_dir, "修改后")
+                os.makedirs(modified_dir, exist_ok=True)
 
-                # 调用AI
-                self.log_signal.doc_ai_task_status.emit(docx_path, "处理中", "正在调用AI...")
+                # AI识别提示词（包含文件路径用于参考）
+                identify_prompt = f"""请分析以下文档内容，识别并提取以下信息：
+1. 作文标题：从文章中识别的标题，去掉"题目"、"标题"等前缀。也可以从文件路径中参考文件名获取标题。
+2. 作者：从文章中识别的作者姓名，去掉"——"前缀。也可以从文件路径中参考文件名获取作者。
+3. 原文字数：文章原始字数（包含标点，不含空格）
+4. 修改后字数：文章修改后字数（包含标点，不含空格），如果文章没有修改后内容，则填写与原文字数相同
+5. 年级：从文章中识别的年级，如：三年级、四年级等，如无法识别则填空字符串""
+6. 第几次：从文章或文件路径中识别是第几次作文，如无法识别则填空字符串""
+7. 线上或线下：从文章中识别的线上或线下，如无法识别则填空字符串""
+8. 有修改后内容：判断文章是否包含修改后的内容，true或false
+
+文档路径：{docx_path}
+文件名：{os.path.basename(docx_path)}
+所在文件夹：{parent_dir}
+
+文档内容：
+{full_text}
+
+请以JSON格式返回，格式如下：
+{{
+  "作文标题": "识别的标题（必填）",
+  "作者": "识别的作者（必填）",
+  "原文字数": "原始字数",
+  "修改后字数": "修改后字数",
+  "年级": "识别的年级或空字符串",
+  "第几次": "识别的第几次或空字符串",
+  "线上或线下": "识别的线上或线下或空字符串",
+  "有修改后内容": true或false,
+  "修改前正文": "提取的修改前纯正文内容（不含标题、作者、班级、姓名、题目等元数据，只保留正文段落）",
+  "修改后正文": "提取的修改后纯正文内容（如果没有修改后内容则为空字符串）"
+}}
+
+重要提示：
+1. 修改前正文和修改后正文必须是纯正文内容，不能包含"标题"、"作者"、"班级"、"姓名"、"题目"、"修改前"、"修改后"等元数据
+2. 如果文档中有"班级："、"姓名："、"题目："等行，请忽略这些行，只提取正文段落
+3. 正文段落通常以"　　"（两个全角空格）开头或自然段落"""
+
+                # 调用AI识别
+                self.log_signal.doc_ai_task_status.emit(docx_path, "处理中", "正在调用AI识别...")
                 response = client.chat.completions.create(
                     model=model,
                     messages=[
-                        {"role": "system", "content": "你是一名专业的文档分析助手，擅长从中文作文中提取信息。"},
-                        {"role": "user", "content": prompt}
+                        {"role": "system", "content": "你是一名专业的文档分析助手，擅长从中文作文中提取信息。请务必返回有效的JSON格式。"},
+                        {"role": "user", "content": identify_prompt}
                     ],
                     temperature=0.1,
                     stream=False
@@ -1526,12 +1694,50 @@ class MainWindow(QMainWindow):
                     result_data = json.loads(json_str)
 
                     # 更新表格
-                    title = result_data.get("作文标题", "未知")
-                    author = result_data.get("作者", "未知")
+                    title = result_data.get("作文标题", "") or ""
+                    author = result_data.get("作者", "") or ""
                     original_count = result_data.get("原文字数", "未知")
                     modified_count = result_data.get("修改后字数", "未知")
-                    grade = result_data.get("年级", "未知")
-                    online_offline = result_data.get("线上或线下", "未知")
+                    grade = result_data.get("年级", "") or ""
+                    times = result_data.get("第几次", "") or ""
+                    online_offline = result_data.get("线上或线下", "") or ""
+                    has_modified = result_data.get("有修改后内容", False)
+                    before_text = result_data.get("修改前正文", "") or ""  # AI提取的修改前纯正文
+                    after_text = result_data.get("修改后正文", "") or ""   # AI提取的修改后纯正文
+
+                    # 如果AI未提取到修改前正文，使用原文
+                    if not before_text.strip():
+                        before_text = full_text
+
+                    # 如果标题或作者为空，尝试从文件名解析
+                    if not title or not author:
+                        file_stem = os.path.splitext(os.path.basename(docx_path))[0]
+                        # 尝试解析文件名格式：作文标题——作者 或 作文标题——作者年级第几次线上线下
+                        name_match = re.match(r'^(.+?)——(.+?)(年级|第|$)', file_stem)
+                        if name_match:
+                            if not title:
+                                title = name_match.group(1).strip()
+                            if not author:
+                                author = name_match.group(2).strip()
+                        elif not title:
+                            title = file_stem
+
+                    # 确保标题和作者不为空
+                    if not title:
+                        title = "未知标题"
+                    if not author:
+                        author = "未知作者"
+
+                    # 生成新文件名：改 [作文标题]——[作者][年级][第几次][线上线下].docx
+                    name_parts = [f"改 {title}——{author}"]
+                    if grade:
+                        name_parts.append(grade)
+                    if times:
+                        name_parts.append(times)
+                    if online_offline:
+                        name_parts.append(online_offline)
+                    new_filename = "".join(name_parts) + ".docx"
+                    new_path = os.path.join(modified_dir, new_filename)
 
                     # 判断修改后字数是否合格（780-930字）
                     is_qualified = "未知"
@@ -1544,27 +1750,324 @@ class MainWindow(QMainWindow):
                     except (ValueError, TypeError):
                         is_qualified = "未知"
 
+                    # 处理文档：如果没有修改后内容，用AI修改
+                    if not has_modified:
+                        self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 无修改后内容，AI修改中...")
+                        self.log_signal.doc_ai_task_status.emit(docx_path, "处理中", "AI修改作文中...")
+                        
+                        # 构建字数限制说明
+                        count_requirement = ""
+                        if count_min and count_max:
+                            count_requirement = f"\n6. 修改后的正文字数必须控制在 {count_min} 到 {count_max} 字之间（包含标点，不含空格）"
+                        elif count_min:
+                            count_requirement = f"\n6. 修改后的正文字数必须不少于 {count_min} 字（包含标点，不含空格）"
+                        elif count_max:
+                            count_requirement = f"\n6. 修改后的正文字数必须不超过 {count_max} 字（包含标点，不含空格）"
+
+                        # 使用自定义提示词，明确要求只输出纯正文
+                        if "{text}" in custom_prompt:
+                            modify_prompt = custom_prompt.format(text=before_text)
+                        else:
+                            modify_prompt = custom_prompt + f"""
+
+文档路径：{docx_path}
+
+原始文章正文：
+{before_text}
+
+重要要求：
+1. 只输出修改后的纯正文内容
+2. 不要包含标题、作者、班级、姓名、题目等元数据
+3. 不要包含"修改前"、"修改后"等标签
+4. 只输出正文段落，每段保持原有格式
+5. 不要添加任何解释{count_requirement}"""
+
+                        # 调用AI修改
+                        modify_response = client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": "你是一名严谨的中文校对助手。只输出纯正文内容，不要包含任何元数据或标签。"},
+                                {"role": "user", "content": modify_prompt}
+                            ],
+                            temperature=0.1,
+                            stream=False
+                        )
+                        after_text = modify_response.choices[0].message.content.strip()
+                    else:
+                        # 原文已有修改后内容，使用AI提取的修改后正文
+                        if after_text.strip():
+                            # 已经从AI识别中获取到修改后正文
+                            pass
+                        else:
+                            # 尝试从原文中分离修改前和修改后内容
+                            lines = full_text.split("\n")
+                            after_lines = []
+                            is_before = True
+                            
+                            for line in lines:
+                                if "修改前" in line:
+                                    is_before = True
+                                    continue
+                                elif "修改后" in line:
+                                    is_before = False
+                                    continue
+                                
+                                if not is_before:
+                                    after_lines.append(line)
+                            
+                            if after_lines:
+                                after_text = "\n".join(after_lines)
+                            else:
+                                # 没有找到修改后内容，用AI修改
+                                self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 解析失败，AI修改中...")
+                                
+                                # 构建字数限制说明
+                                count_requirement = ""
+                                if count_min and count_max:
+                                    count_requirement = f"\n6. 修改后的正文字数必须控制在 {count_min} 到 {count_max} 字之间（包含标点，不含空格）"
+                                elif count_min:
+                                    count_requirement = f"\n6. 修改后的正文字数必须不少于 {count_min} 字（包含标点，不含空格）"
+                                elif count_max:
+                                    count_requirement = f"\n6. 修改后的正文字数必须不超过 {count_max} 字（包含标点，不含空格）"
+
+                                # 使用自定义提示词
+                                if "{text}" in custom_prompt:
+                                    modify_prompt = custom_prompt.format(text=before_text)
+                                else:
+                                    modify_prompt = custom_prompt + f"""
+
+文档路径：{docx_path}
+
+原始文章正文：
+{before_text}
+
+重要要求：
+1. 只输出修改后的纯正文内容
+2. 不要包含标题、作者、班级、姓名、题目等元数据
+3. 不要包含"修改前"、"修改后"等标签
+4. 只输出正文段落
+5. 不要添加任何解释{count_requirement}"""
+
+                                modify_response = client.chat.completions.create(
+                                    model=model,
+                                    messages=[
+                                        {"role": "system", "content": "你是一名严谨的中文校对助手。只输出纯正文内容，不要包含任何元数据或标签。"},
+                                        {"role": "user", "content": modify_prompt}
+                                    ],
+                                    temperature=0.1,
+                                    stream=False
+                                )
+                                after_text = modify_response.choices[0].message.content.strip()
+
+                    # 创建新文档，格式为：修改前（分页符）修改后
+                    # 格式与"图片转作文"功能一致
+                    new_doc = Document()
+                    
+                    # 设置默认字体
+                    style = new_doc.styles["Normal"]
+                    style.font.name = "宋体"
+                    style.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+                    style.font.size = Pt(12)
+
+                    # 获取标题和作者
+                    title_display = title if title and title != "未知" else os.path.splitext(os.path.basename(docx_path))[0]
+                    author_display = author if author and author != "未知" else ""
+
+                    # 添加"修改前："标签
+                    p_before_label = new_doc.add_paragraph("修改前：")
+                    p_before_label.paragraph_format.first_line_indent = Cm(0.74)
+                    p_before_label.paragraph_format.space_before = Pt(0)
+                    p_before_label.paragraph_format.space_after = Pt(0)
+                    p_before_label.paragraph_format.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+                    p_before_label.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加作文标题（居中）
+                    p_title = new_doc.add_paragraph(title_display)
+                    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_title.paragraph_format.space_before = Pt(0)
+                    p_title.paragraph_format.space_after = Pt(0)
+                    p_title.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加作者姓名（居中，格式为 "——作者"）
+                    if author_display:
+                        p_author = new_doc.add_paragraph(f"——{author_display}")
+                        p_author.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        p_author.paragraph_format.space_before = Pt(0)
+                        p_author.paragraph_format.space_after = Pt(0)
+                        p_author.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加修改前内容（使用AI提取的纯正文）
+                    for line in before_text.split("\n"):
+                        if line.strip():
+                            # 跳过元数据行
+                            line_content = line.strip()
+                            if any(keyword in line_content for keyword in ["班级：", "姓名：", "题目：", "修改前：", "修改后："]):
+                                continue
+                            p = new_doc.add_paragraph(line_content)
+                            p.paragraph_format.first_line_indent = Cm(0.74)
+                            p.paragraph_format.space_before = Pt(0)
+                            p.paragraph_format.space_after = Pt(0)
+                            p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+                            p.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加分页符
+                    new_doc.add_page_break()
+
+                    # 添加"修改后："标签
+                    p_after_label = new_doc.add_paragraph("修改后：")
+                    p_after_label.paragraph_format.first_line_indent = Cm(0.74)
+                    p_after_label.paragraph_format.space_before = Pt(0)
+                    p_after_label.paragraph_format.space_after = Pt(0)
+                    p_after_label.paragraph_format.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+                    p_after_label.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加作文标题（居中）
+                    p_title2 = new_doc.add_paragraph(title_display)
+                    p_title2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_title2.paragraph_format.space_before = Pt(0)
+                    p_title2.paragraph_format.space_after = Pt(0)
+                    p_title2.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加作者姓名（居中，格式为 "——作者"）
+                    if author_display:
+                        p_author2 = new_doc.add_paragraph(f"——{author_display}")
+                        p_author2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        p_author2.paragraph_format.space_before = Pt(0)
+                        p_author2.paragraph_format.space_after = Pt(0)
+                        p_author2.paragraph_format.line_spacing = Pt(12)
+
+                    # 添加修改后内容（使用AI提取的纯正文）
+                    for line in after_text.split("\n"):
+                        if line.strip():
+                            # 跳过元数据行
+                            line_content = line.strip()
+                            if any(keyword in line_content for keyword in ["班级：", "姓名：", "题目：", "修改前：", "修改后："]):
+                                continue
+                            p = new_doc.add_paragraph(line_content)
+                            p.paragraph_format.first_line_indent = Cm(0.74)
+                            p.paragraph_format.space_before = Pt(0)
+                            p.paragraph_format.space_after = Pt(0)
+                            p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+                            p.paragraph_format.line_spacing = Pt(12)
+
+                    # 保存新文档
+                    new_doc.save(new_path)
+
                     self.log_signal.doc_ai_task_status.emit(
                         docx_path, "完成",
                         f"标题:{title} 作者:{author} 字数:{original_count} 年级:{grade} 修改后:{modified_count}字 [{is_qualified}]"
                     )
+                    self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 已保存到 {new_path}")
 
                     # 更新表格显示
                     QTimer.singleShot(0, lambda p=docx_path, t=title, a=author, 
                                      oc=original_count, mc=modified_count, 
                                      g=grade, oo=online_offline, iq=is_qualified: 
                                      self._update_doc_ai_table(p, t, a, oc, mc, g, oo, iq))
+                    return  # 成功处理，退出重试循环
 
                 except json.JSONDecodeError as e:
+                    if attempt < max_retries - 1:
+                        self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: JSON解析失败，重试中...")
+                        continue
                     self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: JSON解析失败 - {e}")
                     self.log_signal.doc_ai_task_status.emit(docx_path, "失败", f"JSON解析失败: {e}")
 
             except Exception as e:
+                if attempt < max_retries - 1:
+                    self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 处理失败，重试中...")
+                    continue
                 self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: {e}")
                 self.log_signal.doc_ai_task_status.emit(docx_path, "失败", str(e))
                 if _is_bad_marshal_error(e):
                     _clear_project_bytecode_caches()
                     self.log_signal.doc_ai_log_message.emit(_format_exception_for_log(e))
+
+    def _run_doc_ai_workflow(self):
+        import shutil
+        
+        folder = self.doc_ai_path_entry.text().strip()
+        api_key = self.doc_ai_key_entry.text().strip()
+        base_url = self.doc_ai_url_entry.text().strip()
+        model = self.doc_ai_model_entry.text().strip() or "deepseek-chat"
+        max_parallel = int(self.doc_ai_parallel_spin.currentText())
+
+        if not folder or not api_key:
+            self.log_signal.doc_ai_log_message.emit("请填写文件夹路径和 API Key")
+            return
+        if not os.path.isdir(folder):
+            self.log_signal.doc_ai_log_message.emit("文件夹路径无效")
+            return
+
+        # 保存配置
+        selected_provider = _ensure_provider_exists(self.config, self.doc_ai_provider_combo.currentText() or "deepseek")
+        cfg = self.config
+        cfg.setdefault("LLM", {})
+        cfg["LLM"].setdefault("PROVIDERS", {})
+        cfg["LLM"]["PROVIDERS"].setdefault(selected_provider, {})
+        cfg["LLM"]["PROVIDERS"][selected_provider]["API_KEY"] = api_key
+        cfg["LLM"]["PROVIDERS"][selected_provider]["BASE_URL"] = base_url
+        cfg["LLM"]["PROVIDERS"][selected_provider]["MODEL"] = model
+        save_config(cfg)
+
+        # 获取自定义提示词
+        custom_prompt = self.doc_ai_prompt_text.toPlainText().strip()
+        if not custom_prompt:
+            custom_prompt = "下面是一篇中文文章，请你【只修改错别字和明显的识别错误】。\n要求：1. 不改变原意 2. 不润色文风 3. 不增删内容 4. 保持原有段落结构 5. 只输出修改后的完整文章正文\n"
+
+        # 获取字数限制
+        count_min = None
+        count_max = None
+        min_text = self.doc_ai_count_min.text().strip()
+        max_text = self.doc_ai_count_max.text().strip()
+        if min_text:
+            try:
+                count_min = int(min_text)
+            except ValueError:
+                self.log_signal.doc_ai_log_message.emit("最少字数必须是整数")
+                return
+        if max_text:
+            try:
+                count_max = int(max_text)
+            except ValueError:
+                self.log_signal.doc_ai_log_message.emit("最多字数必须是整数")
+                return
+        if count_min and count_max and count_min > count_max:
+            self.log_signal.doc_ai_log_message.emit("最少字数不能大于最多字数")
+            return
+
+        # 扫描docx文件
+        self.log_signal.doc_ai_log_message.emit("开始扫描文件夹...")
+        docx_files = self._scan_docx_files(folder)
+
+        if not docx_files:
+            self.log_signal.doc_ai_log_message.emit("未找到docx文件")
+            return
+
+        self.log_signal.doc_ai_log_message.emit(f"找到 {len(docx_files)} 个docx文件，开始处理（并发数：{max_parallel}）")
+        self.log_signal.doc_ai_tasks_loaded.emit(docx_files)
+
+        # 创建AI客户端
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        except Exception as e:
+            self.log_signal.doc_ai_log_message.emit(f"创建AI客户端失败: {e}")
+            return
+
+        # 使用线程池处理文件
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            futures = []
+            for docx_path in docx_files:
+                future = executor.submit(self._process_single_docx, docx_path, client, model, custom_prompt, count_min, count_max)
+                futures.append((future, docx_path))
+
+            # 等待所有任务完成
+            for future, docx_path in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: 线程异常 - {e}")
+                    self.log_signal.doc_ai_task_status.emit(docx_path, "失败", str(e))
 
         self.log_signal.doc_ai_log_message.emit("处理完成！")
 
@@ -1589,6 +2092,7 @@ class MainWindow(QMainWindow):
                 break
 
     def _render_doc_ai_queue(self, task_paths):
+        """渲染任务队列（替换所有任务）"""
         self.doc_ai_queue_table.setRowCount(0)
         for i, task_path in enumerate(task_paths, start=1):
             row = self.doc_ai_queue_table.rowCount()
@@ -1607,6 +2111,41 @@ class MainWindow(QMainWindow):
                 item = self.doc_ai_queue_table.item(row, col)
                 if item:
                     item.setBackground(QColor("#cfe2ff"))
+
+    def _add_doc_ai_tasks(self, task_paths):
+        """添加任务到队列（不替换现有任务）"""
+        existing_paths = set()
+        for row in range(self.doc_ai_queue_table.rowCount()):
+            path_item = self.doc_ai_queue_table.item(row, 1)
+            if path_item:
+                existing_paths.add(path_item.text())
+        
+        added_count = 0
+        for task_path in task_paths:
+            if task_path not in existing_paths:
+                row = self.doc_ai_queue_table.rowCount()
+                self.doc_ai_queue_table.insertRow(row)
+                self.doc_ai_queue_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+                self.doc_ai_queue_table.setItem(row, 1, QTableWidgetItem(task_path))
+                self.doc_ai_queue_table.setItem(row, 2, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 3, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 4, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 5, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 6, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 7, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 8, QTableWidgetItem("-"))
+                self.doc_ai_queue_table.setItem(row, 9, QTableWidgetItem("待处理"))
+                for col in range(10):
+                    item = self.doc_ai_queue_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor("#cfe2ff"))
+                added_count += 1
+        
+        # 更新序号
+        for row in range(self.doc_ai_queue_table.rowCount()):
+            self.doc_ai_queue_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+        
+        return added_count
 
     def _update_doc_ai_task_status(self, task_path, status, log_msg=""):
         colors = {"待处理": "#cfe2ff", "处理中": "#fff3bf", "完成": "#d4edda", "失败": "#f8d7da", "跳过": "#e2e3e5"}
