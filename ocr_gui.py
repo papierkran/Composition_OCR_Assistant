@@ -26,6 +26,7 @@ from docx.shared import Pt, Cm
 from docx.oxml.ns import qn
 from docx.enum.text import WD_LINE_SPACING, WD_BREAK, WD_ALIGN_PARAGRAPH
 from openai import OpenAI
+from llm_client import fetch_models
 
 
 # ================= 默认配置 =================
@@ -408,7 +409,9 @@ class MainWindow(QMainWindow):
             if os.path.isdir(path):
                 folders.append(path)
             elif path.lower().endswith('.docx') and not os.path.basename(path).startswith('~$'):
-                docx_files.append(path)
+                # 检查文件是否在"修改后"文件夹下
+                if "修改后" not in path.split(os.sep):
+                    docx_files.append(path)
             elif path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                 image_files.append(path)
         
@@ -452,7 +455,7 @@ class MainWindow(QMainWindow):
         
         api_key = self.doc_ai_key_entry.text().strip()
         base_url = self.doc_ai_url_entry.text().strip()
-        model = self.doc_ai_model_entry.text().strip() or "deepseek-chat"
+        model = self.doc_ai_model_combo.currentText().strip() or "deepseek-chat"
         max_parallel = int(self.doc_ai_parallel_spin.currentText())
 
         # 保存配置
@@ -486,9 +489,6 @@ class MainWindow(QMainWindow):
                 count_max = int(max_text)
             except ValueError:
                 pass
-
-        # 更新表格显示
-        self.log_signal.doc_ai_tasks_loaded.emit(docx_files)
 
         # 创建AI客户端
         try:
@@ -1473,9 +1473,17 @@ class MainWindow(QMainWindow):
         ai_form.addRow("Base URL:", self.doc_ai_url_entry)
 
         # Model
-        self.doc_ai_model_entry = QLineEdit()
-        self.doc_ai_model_entry.setText(default_cfg.get("MODEL", "deepseek-chat"))
-        ai_form.addRow("Model:", self.doc_ai_model_entry)
+        model_layout = QHBoxLayout()
+        self.doc_ai_model_combo = QComboBox()
+        self.doc_ai_model_combo.setEditable(True)
+        current_model = default_cfg.get("MODEL", "deepseek-chat")
+        self.doc_ai_model_combo.setCurrentText(current_model)
+        model_layout.addWidget(self.doc_ai_model_combo, 1)
+        btn_refresh_models = QPushButton("获取列表")
+        btn_refresh_models.setFixedWidth(70)
+        btn_refresh_models.clicked.connect(self._refresh_doc_ai_models)
+        model_layout.addWidget(btn_refresh_models)
+        ai_form.addRow("Model:", model_layout)
 
         # Prompt
         ai_group.setLayout(ai_form)
@@ -1592,7 +1600,27 @@ class MainWindow(QMainWindow):
         provider_cfg = (self.config.get("LLM", {}).get("PROVIDERS", {}).get(p_name, {}) or {})
         self.doc_ai_key_entry.setText(provider_cfg.get("API_KEY", ""))
         self.doc_ai_url_entry.setText(provider_cfg.get("BASE_URL", ""))
-        self.doc_ai_model_entry.setText(provider_cfg.get("MODEL", ""))
+        self.doc_ai_model_combo.setCurrentText(provider_cfg.get("MODEL", ""))
+
+    def _refresh_doc_ai_models(self):
+        """Fetch model list from the current provider's API and populate the combobox."""
+        api_key = self.doc_ai_key_entry.text().strip()
+        base_url = self.doc_ai_url_entry.text().strip()
+        if not api_key:
+            QMessageBox.information(self, "提示", "请先填写 API Key")
+            return
+        try:
+            models = fetch_models(api_key, base_url)
+            if models:
+                self.doc_ai_model_combo.clear()
+                self.doc_ai_model_combo.addItems(models)
+                current = self.doc_ai_model_combo.currentText()
+                if not current:
+                    self.doc_ai_model_combo.setCurrentIndex(0)
+            else:
+                QMessageBox.information(self, "提示", "未获取到模型列表，请检查 API Key 和 Base URL")
+        except Exception as e:
+            QMessageBox.warning(self, "获取失败", f"获取模型列表失败：{str(e)}")
 
     def _browse_doc_ai_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
@@ -1618,7 +1646,28 @@ class MainWindow(QMainWindow):
         for attempt in range(max_retries):
             try:
                 # 读取docx内容
-                doc = Document(docx_path)
+                try:
+                    doc = Document(docx_path)
+                except Exception as e:
+                    if "core.xml" in str(e) or "archive" in str(e).lower():
+                        self.log_signal.doc_ai_log_message.emit(f"  {os.path.basename(docx_path)}: docx文件格式不标准，尝试修复...")
+                        # 尝试修复：复制文件并重新保存
+                        import tempfile
+                        temp_path = tempfile.mktemp(suffix=".docx")
+                        shutil.copy2(docx_path, temp_path)
+                        try:
+                            doc = Document(temp_path)
+                            # 保存修复后的文件
+                            doc.save(docx_path)
+                        except Exception:
+                            os.remove(temp_path)
+                            raise
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                    else:
+                        raise
+                
                 full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
                 if not full_text.strip():
@@ -1989,7 +2038,7 @@ class MainWindow(QMainWindow):
         folder = self.doc_ai_path_entry.text().strip()
         api_key = self.doc_ai_key_entry.text().strip()
         base_url = self.doc_ai_url_entry.text().strip()
-        model = self.doc_ai_model_entry.text().strip() or "deepseek-chat"
+        model = self.doc_ai_model_combo.currentText().strip() or "deepseek-chat"
         max_parallel = int(self.doc_ai_parallel_spin.currentText())
 
         if not folder or not api_key:

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 
 from config_migrate import ensure_new_schema
+from llm_client import fetch_models
 
 
 def _get_cfg_path(default_path: Path) -> Path:
@@ -172,15 +173,46 @@ def open_config_editor_form(
             box = QGroupBox(f"Provider: {pname}")
             form = QFormLayout()
             base = QLineEdit(p.get("BASE_URL", ""))
-            model = QLineEdit(p.get("MODEL", ""))
             key = QLineEdit(p.get("API_KEY", ""))
             key.setEchoMode(QLineEdit.Password)
             form.addRow("BASE_URL", base)
-            form.addRow("MODEL", model)
             form.addRow("API_KEY", key)
+
+            model_layout = QHBoxLayout()
+            model_combo = QComboBox()
+            model_combo.setEditable(True)
+            model_combo.setCurrentText(p.get("MODEL", ""))
+            model_layout.addWidget(model_combo, 1)
+            btn_fetch = QPushButton("获取列表")
+            btn_fetch.setFixedWidth(70)
+
+            def _make_fetch_handler(mc, base_e, key_e, pn):
+                def handler():
+                    api_key = key_e.text().strip()
+                    base_url = base_e.text().strip()
+                    if not api_key:
+                        QMessageBox.information(win, "提示", "请先填写 API Key")
+                        return
+                    try:
+                        models = fetch_models(api_key, base_url)
+                        if models:
+                            mc.clear()
+                            mc.addItems(models)
+                            if not mc.currentText():
+                                mc.setCurrentIndex(0)
+                        else:
+                            QMessageBox.information(win, "提示", "未获取到模型列表，请检查 API Key 和 Base URL")
+                    except Exception as e:
+                        QMessageBox.warning(win, "获取失败", f"获取模型列表失败：{str(e)}")
+                return handler
+
+            btn_fetch.clicked.connect(_make_fetch_handler(model_combo, base, key, pname))
+            model_layout.addWidget(btn_fetch)
+            form.addRow("MODEL:", model_layout)
+
             box.setLayout(form)
             providers_container.addWidget(box)
-            provider_widgets[pname] = {"base": base, "model": model, "key": key}
+            provider_widgets[pname] = {"base": base, "model": model_combo, "key": key}
 
     def _on_add():
         name = add_name.text().strip().lower()
@@ -315,7 +347,7 @@ def open_config_editor_form(
         for pname, w in provider_widgets.items():
             new_cfg["LLM"]["PROVIDERS"][pname] = {
                 "BASE_URL": w["base"].text().strip(),
-                "MODEL": w["model"].text().strip(),
+                "MODEL": w["model"].currentText().strip() if hasattr(w["model"], "currentText") else w["model"].text().strip(),
                 "API_KEY": w["key"].text().strip(),
             }
 

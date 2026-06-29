@@ -105,6 +105,39 @@ def make_client(provider: ProviderConfig) -> OpenAI:
     return OpenAI(api_key=provider.api_key)
 
 
+def fetch_models(api_key: str, base_url: str = "") -> List[str]:
+    """Fetch available model list from an OpenAI-compatible API endpoint.
+
+    Uses the GET /v1/models endpoint to retrieve all models accessible
+    with the given api_key. Returns a sorted list of model ID strings.
+
+    If the request fails (e.g. network error, auth failure), returns an empty list.
+    """
+    if not api_key:
+        return []
+    try:
+        client = OpenAI(api_key=api_key, base_url=_norm_base_url(base_url) if base_url else None)
+        response = client.models.list()
+        models: List[str] = []
+        for m in response.data:
+            mid = getattr(m, "id", None)
+            if mid and isinstance(mid, str):
+                models.append(mid)
+        models.sort()
+        return models
+    except Exception:
+        return []
+
+
+def make_client_from_params(api_key: str, base_url: str = "") -> OpenAI:
+    """Create an OpenAI client from raw api_key and base_url strings."""
+    if not api_key:
+        raise RuntimeError("未配置 API Key")
+    if base_url:
+        return OpenAI(api_key=api_key, base_url=_norm_base_url(base_url))
+    return OpenAI(api_key=api_key)
+
+
 def resolve_task_client(config: Dict[str, Any], task_name: str) -> Tuple[OpenAI, str, str]:
     """Return (client, model, prompt) for a given task."""
     task = get_task_config(config, task_name)

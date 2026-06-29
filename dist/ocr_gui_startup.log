@@ -3,3 +3,11 @@
 [2026-06-02 04:43:37] main: MainWindow created
 [2026-06-02 04:43:37] main: window shown visible=True
 [2026-06-02 04:43:42] main: app.exec returned 0
+[2026-06-23 19:34:40] main: start
+[2026-06-23 19:34:40] main: QApplication created
+[2026-06-23 19:34:41] main: MainWindow created
+[2026-06-23 19:34:41] main: window shown visible=True
+[2026-06-29 20:51:48] main: start
+[2026-06-29 20:51:48] main: QApplication created
+[2026-06-29 20:51:48] main: MainWindow created
+[2026-06-29 20:51:48] main: window shown visible=True
